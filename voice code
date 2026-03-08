@@ -1,0 +1,223 @@
+import sounddevice as sd
+import queue
+import json
+from vosk import Model, KaldiRecognizer
+from playsound import playsound
+from gtts import gTTS
+import serial
+import time
+import winsound
+import os
+from twilio.rest import Client
+
+# ---------------- USER DATABASE ---------------- #
+
+users = {
+    "1": {"name": "Arun", "language": "en"},
+    "2": {"name": "Karthik", "language": "ta"},
+    "3": {"name": "Rahul", "language": "hi"},
+}
+
+# ---------------- BRANCH DETAILS ---------------- #
+
+BRANCH_NAME = "Smart Secure Voice ATM - Khar Branch"
+
+# ---------------- TWILIO CONFIG ---------------- #
+
+account_sid = "your value"
+auth_token = "your value"
+twilio_number = "your value"
+receiver_number = "your value"
+
+def send_sms(user_name, amount):
+    try:
+        client = Client(account_sid, auth_token)
+
+        message_body = (
+            f"Smart Secure ATM Alert\n"
+            f"Branch: {BRANCH_NAME}\n"
+            f"User: {user_name}\n"
+            f"Amount Withdrawn: ₹{amount}\n"
+            f"Status: Successful Transaction"
+        )
+
+        message = client.messages.create(
+            body=message_body,
+            from_=twilio_number,
+            to=receiver_number
+        )
+
+        print("SMS Sent Successfully:", message.sid)
+
+    except Exception as e:
+        print("SMS Sending Failed:", e)
+
+# ---------------- SERIAL ---------------- #
+
+ser = serial.Serial("COM4", 9600, timeout=1)
+time.sleep(2)
+
+print("Waiting for fingerprint...")
+
+while True:
+    data = ser.readline().decode().strip()
+    if data.startswith("ID:"):
+        fingerprint_id = data.split(":")[1]
+        print("Fingerprint Matched:", fingerprint_id)
+        break
+
+# ---------------- LANGUAGE ---------------- #
+
+if fingerprint_id not in users:
+    print("Unknown User")
+    exit()
+
+preferred_language = users[fingerprint_id]["language"]
+user_name = users[fingerprint_id]["name"]
+
+print("Selected Language:", preferred_language)
+
+# ---------------- VOSK ---------------- #
+
+model = Model("models/vosk-model-small-en-us-0.15")
+
+recognizer = KaldiRecognizer(
+    model,
+    16000,
+    '["proceed","check balance","check","balance","debit","confirm","cancel","one thousand","two thousand","five thousand","ten thousand"]'
+)
+
+q = queue.Queue()
+
+def callback(indata, frames, time_info, status):
+    q.put(bytes(indata))
+
+# ---------------- AUDIO ---------------- #
+
+def play_audio(filename):
+    path = f"audio/{preferred_language}/{filename}.mp3"
+    playsound(path)
+    time.sleep(0.5)
+
+def speak_name(name):
+    temp = "temp_name.mp3"
+    tts = gTTS(text=f"Welcome {name}", lang=preferred_language)
+    tts.save(temp)
+    playsound(temp)
+    os.remove(temp)
+
+# ---------------- LISTEN ---------------- #
+
+def listen(timeout=6):
+    recognizer.Reset()
+    while not q.empty():
+        q.get()
+
+    text = ""
+
+    with sd.RawInputStream(
+        samplerate=16000,
+        blocksize=8000,
+        dtype='int16',
+        channels=1,
+        callback=callback
+    ):
+        start = time.time()
+        while time.time() - start < timeout:
+            if not q.empty():
+                data = q.get()
+                if recognizer.AcceptWaveform(data):
+                    result = json.loads(recognizer.Result())
+                    text = result.get("text", "")
+                    break
+
+    print("User:", text)
+    return text.lower()
+
+# ---------------- SECOND FINGER ---------------- #
+
+def verify_fingerprint_again(expected_id):
+    print("Place fingerprint again...")
+    while True:
+        data = ser.readline().decode().strip()
+        if data.startswith("ID:"):
+            new_id = data.split(":")[1]
+            print("Second Fingerprint:", new_id)
+            return new_id == expected_id
+
+# ---------------- ATM FLOW ---------------- #
+
+speak_name(user_name)
+play_audio("say_proceed")
+
+winsound.Beep(1000, 400)
+command = listen()
+
+if "proceed" in command:
+
+    play_audio("transaction_started")
+    play_audio("say_option")
+
+    winsound.Beep(1000, 400)
+    command = listen()
+
+    if "balance" in command:
+        play_audio("balance")
+        play_audio("thank_you")
+
+    elif "debit" in command:
+
+        play_audio("ask_amount")
+
+        winsound.Beep(1000, 400)
+        amount_command = listen()
+
+        amount_map = {
+            "one thousand": 1000,
+            "two thousand": 2000,
+            "five thousand": 5000,
+            "ten thousand": 10000
+        }
+
+        selected_amount = None
+        for key in amount_map:
+            if key in amount_command:
+                selected_amount = amount_map[key]
+                break
+
+        if selected_amount is None:
+            play_audio("invalid")
+
+        else:
+            print("Selected Amount:", selected_amount)
+            play_audio("confirm_amount")
+
+            winsound.Beep(1000, 400)
+            confirm_command = listen()
+
+            if "confirm" in confirm_command:
+
+                if verify_fingerprint_again(fingerprint_id):
+
+                    print("Dispensing Cash...")
+                    ser.write(b"DISPENSE\n")
+                    ser.flush()
+                    time.sleep(0.5)
+
+                    play_audio("processing")
+                    time.sleep(3)
+                    play_audio("thank_you")
+
+                    # 📩 SEND SMS HERE
+                    send_sms(user_name, selected_amount)
+
+                else:
+                    play_audio("invalid")
+            else:
+                play_audio("invalid")
+
+    else:
+        play_audio("invalid")
+
+else:
+    play_audio("invalid")
