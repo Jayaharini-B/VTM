@@ -85,3 +85,81 @@ Second fingerprint verification
 Arduino receives dispense command
 
 SMS alert sent to registered number
+
+
+
+
+🏦 ATM AI Security Monitoring System
+(ESP32 + Camera + YOLOv4-Tiny + RTSP + Web Dashboard)
+📌 Project Overview
+
+This project implements an AI-powered ATM security monitoring system using an ESP32 camera module with real-time object detection.
+
+The system:
+
+Detects number of persons in front of ATM
+
+Triggers buzzer if multiple persons detected
+
+Streams live RTSP video
+
+Hosts a live monitoring web dashboard
+
+Displays SAFE / ALERT status
+
+This enhances ATM security by preventing shoulder surfing and suspicious crowding.
+
+🚀 Key Features
+✅ Real-Time Person Detection
+
+Uses YOLOv4-Tiny model
+
+Detects objects in video stream
+
+Counts number of persons
+
+✅ Security Logic
+
+SAFE → 0 or 1 person detected
+
+ALERT → More than 1 person detected
+
+Buzzer activates during ALERT mode
+
+✅ Live RTSP Video Streaming
+
+Access camera stream using:
+
+rtsp://<ESP32_IP>:<PORT>
+✅ Web-Based Monitoring Dashboard
+
+Access via browser:
+
+http://<ESP32_IP>
+
+Auto-refreshes every 2 seconds.
+
+🛠 Technologies Used
+Technology	Purpose
+ESP32 Camera	Video capture
+YOLOv4-Tiny	Object detection
+RTSP	Live streaming
+WiFi Server	Web dashboard
+C++ (Arduino)	Firmware development
+🏗 System Architecture
+
+Camera captures video
+
+YOLO model detects objects
+
+System counts "person" objects
+
+If person_count > 1:
+
+Buzzer ON
+
+Status = ALERT
+
+Web dashboard displays live status
+
+RTSP stream available for monitoring
