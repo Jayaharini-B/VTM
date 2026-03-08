@@ -1,0 +1,180 @@
+#include <WiFi.h>
+#include <WiFiServer.h>
+
+#include "StreamIO.h"
+#include "VideoStream.h"
+#include "RTSP.h"
+#include "NNObjectDetection.h"
+#include "VideoStreamOverlay.h"
+#include "ObjectClassList.h"
+
+#define CHANNEL   0
+#define CHANNELNN 3
+#define BUZZER_PIN 8
+
+#define NNWIDTH  576
+#define NNHEIGHT 320
+
+VideoSetting config(VIDEO_FHD, 30, VIDEO_H264, 0);
+VideoSetting configNN(NNWIDTH, NNHEIGHT, 10, VIDEO_RGB, 0);
+
+NNObjectDetection ObjDet;
+RTSP rtsp;
+StreamIO videoStreamer(1, 1);
+StreamIO videoStreamerNN(1, 1);
+
+char ssid[] = "Laptop";        // 🔁 your WiFi name
+char pass[] = "12345678";      // 🔁 your WiFi password
+
+WiFiServer server(80);
+
+IPAddress ip;
+int rtsp_portnum;
+
+String atmStatus = "SAFE";
+
+void setup()
+{
+    Serial.begin(115200);
+
+    pinMode(BUZZER_PIN, OUTPUT);
+    digitalWrite(BUZZER_PIN, LOW);
+
+    // ===== CONNECT WIFI =====
+    Serial.println("Connecting to WiFi...");
+    WiFi.begin(ssid, pass);
+
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(1000);
+        Serial.print(".");
+    }
+
+    Serial.println();
+    Serial.println("WiFi Connected!");
+
+    ip = WiFi.localIP();
+    Serial.print("IP Address: ");
+    Serial.println(ip);
+
+    // Start Web Server
+    server.begin();
+    Serial.println("Web server started");
+
+    // ===== CAMERA SETUP =====
+    config.setBitrate(2 * 1024 * 1024);
+    Camera.configVideoChannel(CHANNEL, config);
+    Camera.configVideoChannel(CHANNELNN, configNN);
+    Camera.videoInit();
+
+    // ===== RTSP SETUP =====
+    rtsp.configVideo(config);
+    rtsp.begin();
+    rtsp_portnum = rtsp.getPort();
+
+    Serial.print("RTSP Stream: rtsp://");
+    Serial.print(ip);
+    Serial.print(":");
+    Serial.println(rtsp_portnum);
+
+    // ===== OBJECT DETECTION =====
+    ObjDet.configVideo(configNN);
+    ObjDet.modelSelect(OBJECT_DETECTION, DEFAULT_YOLOV4TINY, NA_MODEL, NA_MODEL);
+    ObjDet.begin();
+
+    videoStreamer.registerInput(Camera.getStream(CHANNEL));
+    videoStreamer.registerOutput(rtsp);
+    videoStreamer.begin();
+    Camera.channelBegin(CHANNEL);
+
+    videoStreamerNN.registerInput(Camera.getStream(CHANNELNN));
+    videoStreamerNN.registerOutput(ObjDet);
+    videoStreamerNN.begin();
+    Camera.channelBegin(CHANNELNN);
+
+    OSD.configVideo(CHANNEL, config);
+    OSD.begin();
+}
+
+void loop()
+{
+    std::vector<ObjectDetectionResult> results = ObjDet.getResult();
+    int person_count = 0;
+
+    for (int i = 0; i < ObjDet.getResultCount(); i++) {
+        int obj_type = results[i].type();
+        if (strcmp(itemList[obj_type].objectName, "person") == 0) {
+            person_count++;
+        }
+    }
+
+    Serial.print("Persons detected: ");
+    Serial.println(person_count);
+
+    // ===== ATM LOGIC =====
+    if (person_count > 1) {
+        digitalWrite(BUZZER_PIN, HIGH);
+        atmStatus = "ALERT";
+    } else {
+        digitalWrite(BUZZER_PIN, LOW);
+        atmStatus = "SAFE";
+    }
+
+    // ===== WEB SERVER HANDLER =====
+    WiFiClient client = server.available();
+
+    if (client) {
+        Serial.println("Client Connected");
+
+        boolean currentLineIsBlank = true;
+
+        while (client.connected()) {
+            if (client.available()) {
+                char c = client.read();
+
+                if (c == '\n' && currentLineIsBlank) {
+                    break;
+                }
+
+                if (c == '\n') {
+                    currentLineIsBlank = true;
+                } else if (c != '\r') {
+                    currentLineIsBlank = false;
+                }
+            }
+        }
+
+        client.println("HTTP/1.1 200 OK");
+        client.println("Content-Type: text/html");
+        client.println("Connection: close");
+        client.println();
+
+        client.println("<!DOCTYPE HTML>");
+        client.println("<html>");
+        client.println("<head>");
+        client.println("<meta http-equiv='refresh' content='2'>");
+        client.println("<title>ATM Security Monitor</title>");
+        client.println("</head>");
+
+        client.println("<body style='text-align:center;font-family:Arial;background:#111;color:white;'>");
+        client.println("<h1>🏦 ATM AI Security System</h1>");
+
+        if (atmStatus == "ALERT") {
+            client.println("<h2 style='color:red;'>🚨 ALERT: Multiple Persons Detected!</h2>");
+        } else {
+            client.println("<h2 style='color:lime;'>✅ SAFE</h2>");
+        }
+
+        client.print("<h3>Persons Detected: ");
+        client.print(person_count);
+        client.println("</h3>");
+
+        client.println("</body>");
+        client.println("</html>");
+
+        delay(1);
+        client.stop();
+        Serial.println("Client Disconnected");
+    }
+
+    delay(200);
+}
